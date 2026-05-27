@@ -11,6 +11,7 @@ from src.strategies import SMACrossoverStrategy, RSIMeanReversionStrategy
 from src.metrics import MetricsCalculator
 from src.market_screener import MarketScreener
 from src.optimizer import StrategyOptimizer
+from src.risk_manager import RiskManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -115,8 +116,56 @@ def main():
         except Exception as e:
             logger.error(f"Backtest failed for {asset}: {e}")
 
-    # PHASE 6: Strategy Optimization (Walk-forward grid search) for qualified assets
-    print("\n[PHASE 6] Strategy Optimization - Walk-Forward Grid Search...")
+    # PHASE 6: Risk-Managed Backtesting with Dynamic Position Sizing
+    print("\n[PHASE 6] Production Risk Management - Dynamic Position Sizing & SL/TP...")
+    risk_manager = RiskManager(
+        total_capital=10000.0,
+        max_risk_per_trade_pct=1.0,
+        max_position_size_pct=10.0
+    )
+
+    for asset in qualified[:min(3, len(qualified))]:  # Test on first 3 qualified assets
+        clean_name = asset.replace("-", "_").lower()
+        print(f"\n{'='*60}")
+        print(f"🛡️ Risk-Managed Backtest for {asset.upper()}...")
+        print(f"{'='*60}")
+
+        try:
+            # SMA with Risk Management
+            sma_strategy = SMACrossoverStrategy(short_window=10, long_window=30)
+            sma_metrics, sma_df = engine.run_backtest_with_risk_management(
+                sma_strategy,
+                asset,
+                start_dt.isoformat(),
+                end_dt.isoformat(),
+                stop_loss_pct=5.0,
+                take_profit_pct=20.0,
+                max_risk_per_trade_pct=1.0,
+                use_csv=None
+            )
+            print(f"\n✅ SMA Risk-Managed Backtest Complete:")
+            MetricsCalculator.print_metrics(sma_metrics, f"{asset} - SMA Crossover (Risk-Managed)")
+
+            # RSI with Risk Management
+            rsi_strategy = RSIMeanReversionStrategy(period=14, oversold=30, overbought=70)
+            rsi_metrics, rsi_df = engine.run_backtest_with_risk_management(
+                rsi_strategy,
+                asset,
+                start_dt.isoformat(),
+                end_dt.isoformat(),
+                stop_loss_pct=5.0,
+                take_profit_pct=20.0,
+                max_risk_per_trade_pct=1.0,
+                use_csv=None
+            )
+            print(f"\n✅ RSI Risk-Managed Backtest Complete:")
+            MetricsCalculator.print_metrics(rsi_metrics, f"{asset} - RSI Mean Reversion (Risk-Managed)")
+
+        except Exception as e:
+            logger.error(f"Risk-managed backtest failed for {asset}: {e}")
+
+    # PHASE 7: Strategy Optimization (Walk-forward grid search) for qualified assets
+    print("\n[PHASE 7] Strategy Optimization - Walk-Forward Grid Search...")
     optimizer = StrategyOptimizer(DATABASE_URL, initial_capital=10000.0)
 
     # Parameter grids (kept small to limit runtime)

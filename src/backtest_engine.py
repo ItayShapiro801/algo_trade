@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 from src.strategies import BaseStrategy
 from src.metrics import MetricsCalculator, BacktestMetrics
+from src.risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,97 @@ class BacktestEngine:
         trade_mask = position_changes > 0
         costs[trade_mask] = self.commission + self.slippage
         return returns - costs
+
+    def run_backtest_with_risk_management(
+        self,
+        strategy: BaseStrategy,
+        ticker: str,
+        start_date: str,
+        end_date: str,
+        stop_loss_pct: float = 5.0,
+        take_profit_pct: float = 20.0,
+        max_risk_per_trade_pct: float = 1.0,
+        use_csv: Optional[str] = None
+    ) -> Tuple[BacktestMetrics, pd.DataFrame]:
+        """
+        Execute backtest with integrated risk management (position sizing, SL/TP).
+
+        Args:
+            strategy: Strategy object implementing BaseStrategy interface
+            ticker: Asset ticker
+            start_date: Backtest start date
+            end_date: Backtest end date
+            stop_loss_pct: Stop loss percentage below entry
+            take_profit_pct: Take profit percentage above entry
+            max_risk_per_trade_pct: Maximum risk per trade as % of capital
+            use_csv: Optional CSV file path
+
+        Returns:
+            Tuple of (BacktestMetrics, results_dataframe with position sizing)
+        """
+        logger.info(
+            f"Starting risk-managed backtest: {strategy.name} on {ticker} | "
+            f"SL={stop_loss_pct}%, TP={take_profit_pct}%, "
+            f"MaxRisk={max_risk_per_trade_pct}%"
+        )
+
+        if use_csv:
+            df = pd.read_csv(use_csv, parse_dates=['Date'], index_col='Date')
+            df.columns = [col.lower() for col in df.columns]
+        else:
+            df = self.fetch_data_from_db(ticker, start_date, end_date)
+
+        # Initialize risk manager
+        risk_manager = RiskManager(
+            total_capital=self.initial_capital,
+            max_risk_per_trade_pct=max_risk_per_trade_pct
+        )
+
+        # Generate signals
+        df_with_signals = strategy.generate_signals(df)
+
+        # Apply position sizing with risk management
+        df_with_signals = risk_manager.apply_position_sizing_to_backtest(
+            df_with_signals,
+            entry_price_col='close',
+            stop_loss_pct=stop_loss_pct,
+            initial_capital=self.initial_capital,
+            max_risk_per_trade_pct=max_risk_per_trade_pct
+        )
+
+        # Use position weights instead of raw signals
+        df_with_signals['position'] = df_with_signals['position_weight'].shift(1).fillna(0.0)
+
+        # Calculate returns
+        df_with_signals['market_return'] = df_with_signals['close'].pct_change()
+        df_with_signals['strategy_return'] = (
+            df_with_signals['market_return'] * df_with_signals['position']
+        )
+
+        # Apply costs
+        df_with_signals['adjusted_return'] = self._apply_costs(
+            df_with_signals['strategy_return'],
+            df_with_signals['position']
+        )
+
+        # Calculate portfolio value
+        cumulative_returns = (1 + df_with_signals['adjusted_return']).cumprod() - 1
+        df_with_signals['portfolio_value'] = self.initial_capital * (1 + cumulative_returns)
+
+        # Compute metrics
+        metrics = MetricsCalculator.compute_all_metrics(
+            df_with_signals['adjusted_return'].dropna(),
+            df_with_signals['portfolio_value']
+        )
+
+        logger.info(
+            f"Risk-managed backtest completed: {strategy.name} | "
+            f"Return: {metrics.cumulative_return:.2%} | "
+            f"Sharpe: {metrics.sharpe_ratio:.2f} | "
+            f"Max DD: {metrics.max_drawdown:.2%}"
+        )
+
+        return metrics, df_with_signals
 
 
 class StrategyComparator:
