@@ -2,7 +2,6 @@ name: Daily Portfolio Scan
 
 on:
   schedule:
-    # Runs every weekday at 17:00 Israel summer time (14:00 UTC)
     - cron: '0 14 * * 1-5'
   workflow_dispatch:
 
@@ -24,7 +23,7 @@ jobs:
       - name: Create data directory and mock state file
         run: |
           mkdir -p data
-          echo '{"positions": {}, "cash": 100000.0, "portfolio_value": 100000.0, "last_rebalance": "2026-06-07"}' > data/paper_trading_state.json
+          python -c "import json; f=open('data/paper_trading_state.json','w'); json.dump({'positions': {}, 'cash': 100000.0, 'portfolio_value': 100000.0, 'last_rebalance': '2026-06-07'}, f); f.close()"
 
       - name: Run daily scan
         env:
