@@ -2,7 +2,7 @@ name: Daily Portfolio Scan
 
 on:
   schedule:
-    # Runs every weekday at 08:00 Israel time (~06:00 UTC winter / 05:00 UTC summer)
+    # Runs every weekday at 17:00 Israel summer time (14:00 UTC)
     - cron: '0 14 * * 1-5'
   workflow_dispatch:
 
@@ -21,8 +21,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Create data directory
-        run: mkdir -p data
+      - name: Create data directory and mock state file
+        run: |
+          mkdir -p data
+          echo '{"positions": {}, "cash": 100000.0, "portfolio_value": 100000.0, "last_rebalance": "2026-06-07"}' > data/paper_trading_state.json
 
       - name: Run daily scan
         env:
