@@ -33,7 +33,7 @@ _fcf_positive_and_growing = _bt._fcf_positive_and_growing
 _ai_sell_confirm          = _bt._ai_sell_confirm
 _san                      = _bt._san
 
-STATE_FILE = Path('data/paper_trading_state.json')
+STATE_FILE = Path('paper_trading_state.json')
 AI_TRACKER = [0.0]
 
 
