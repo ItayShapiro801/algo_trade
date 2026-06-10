@@ -33,7 +33,7 @@ _fcf_positive_and_growing = _bt._fcf_positive_and_growing
 _ai_sell_confirm          = _bt._ai_sell_confirm
 _san                      = _bt._san
 
-STATE_FILE = Path('paper_trading_state.json')
+STATE_FILE = Path('data/paper_trading_state.json')
 AI_TRACKER = [0.0]
 
 
@@ -141,6 +141,17 @@ def format_daily_message(portfolio: dict, alerts: list, state: dict) -> str:
     return msg
 
 
+# ── Market hours ──────────────────────────────────────────────────────────── #
+def is_market_open() -> bool:
+    import alpaca_trade_api as tradeapi
+    api = tradeapi.REST(
+        os.getenv('ALPACA_API_KEY'),
+        os.getenv('ALPACA_SECRET_KEY'),
+        'https://paper-api.alpaca.markets',
+    )
+    return api.get_clock().is_open
+
+
 # ── Main ──────────────────────────────────────────────────────────────────── #
 def run_daily_scan():
     print('=' * 50)
@@ -154,60 +165,85 @@ def run_daily_scan():
         send_telegram('No portfolio state found. Run paper_trading.py first.')
         return
 
-    state    = json.loads(STATE_FILE.read_text())
-    holdings = state.get('positions', {})
-    alerts   = []
-    year     = date.today().year
+    state     = json.loads(STATE_FILE.read_text())
+    holdings  = state.get('positions', {})
+    alerts    = []
+    year      = date.today().year
     today_str = str(date.today())
 
-    print(f'\nChecking {len(holdings)} holdings for new filings...')
-    for ticker, buy_info in holdings.items():
-        try:
-            cik = get_cik(ticker)
-            if not cik or not check_new_filings(ticker, cik):
+    market_open = is_market_open()
+    print(f'\nMarket open: {market_open}')
+
+    if market_open:
+        import alpaca_trade_api as tradeapi
+        from paper_trading import execute_sells
+        api = tradeapi.REST(
+            os.getenv('ALPACA_API_KEY'),
+            os.getenv('ALPACA_SECRET_KEY'),
+            'https://paper-api.alpaca.markets',
+        )
+
+        to_sell = []
+        print(f'\nChecking {len(holdings)} holdings for new filings...')
+        for ticker, buy_info in holdings.items():
+            try:
+                cik = get_cik(ticker)
+                if not cik or not check_new_filings(ticker, cik):
+                    continue
+
+                gaap = get_xbrl_facts(cik)
+                if not gaap:
+                    continue
+                ph = _get_price_cache(ticker)
+                initial_metrics = buy_info.get('initial_metrics', {})
+                if not initial_metrics:
+                    continue
+
+                broke, reason = check_thesis_break(year, initial_metrics, gaap, ph)
+                if not broke:
+                    alerts.append(f'New filing {ticker} - thesis intact')
+                    continue
+
+                cutoff_fcf = f'{year}-01-01'
+                if reason.startswith('ROE collapsed') and _fcf_positive_and_growing(gaap, cutoff_fcf):
+                    alerts.append(f'New filing {ticker} - FCF override keeps position')
+                    continue
+
+                buy_price  = buy_info.get('buy_price', 0.0)
+                buy_year   = buy_info.get('buy_year', year)
+                held_years = max(year - buy_year, 0)
+                hold_count = buy_info.get('ai_hold_count', 0)
+                cur_price  = _price_on_date(ph, today_str) or _last_price_before(ph, today_str)
+
+                decision = conf = ai_reason = None
+                if cur_price and cur_price > buy_price:
+                    decision, conf, ai_reason = _ai_sell_confirm(
+                        ticker, year, reason, AI_TRACKER,
+                        buy_year, buy_price, cur_price, held_years, gaap, hold_count,
+                    )
+
+                rsn_safe = _san(ai_reason or '')
+                if decision == 'SELL':
+                    alerts.append(f'SELL SIGNAL: {ticker} - {reason} | AI ({conf}%): {rsn_safe}')
+                    to_sell.append(ticker)
+                elif decision == 'HOLD':
+                    alerts.append(f'New filing {ticker} - thesis broke but AI ({conf}%) says HOLD: {rsn_safe}')
+                    buy_info['ai_hold_count'] = hold_count + 1
+                else:
+                    alerts.append(f'SELL SIGNAL: {ticker} - {reason} (rule-based, no AI review)')
+                    to_sell.append(ticker)
+            except Exception as e:
+                print(f'  {ticker}: error - {e}')
                 continue
 
-            gaap = get_xbrl_facts(cik)
-            if not gaap:
-                continue
-            ph = _get_price_cache(ticker)
-            initial_metrics = buy_info.get('initial_metrics', {})
-            if not initial_metrics:
-                continue
+        if to_sell:
+            print(f'\nExecuting {len(to_sell)} sell order(s)...')
+            execute_sells(api, to_sell, state)
+            STATE_FILE.write_text(json.dumps(state, indent=2, default=str))
 
-            broke, reason = check_thesis_break(year, initial_metrics, gaap, ph)
-            if not broke:
-                alerts.append(f'New filing {ticker} - thesis intact')
-                continue
-
-            cutoff_fcf = f'{year}-01-01'
-            if reason.startswith('ROE collapsed') and _fcf_positive_and_growing(gaap, cutoff_fcf):
-                alerts.append(f'New filing {ticker} - FCF override keeps position (FCF positive+growing)')
-                continue
-
-            buy_price  = buy_info.get('buy_price', 0.0)
-            buy_year   = buy_info.get('buy_year', year)
-            held_years = max(year - buy_year, 0)
-            hold_count = buy_info.get('ai_hold_count', 0)
-            cur_price  = _price_on_date(ph, today_str) or _last_price_before(ph, today_str)
-
-            decision = conf = ai_reason = None
-            if cur_price and cur_price > buy_price:
-                decision, conf, ai_reason = _ai_sell_confirm(
-                    ticker, year, reason, AI_TRACKER,
-                    buy_year, buy_price, cur_price, held_years, gaap, hold_count,
-                )
-
-            rsn_safe = _san(ai_reason or '')
-            if decision == 'SELL':
-                alerts.append(f'SELL SIGNAL: {ticker} - {reason} | AI ({conf}%): {rsn_safe}')
-            elif decision == 'HOLD':
-                alerts.append(f'New filing {ticker} - thesis broke ({reason}) but AI ({conf}%) says HOLD: {rsn_safe}')
-            else:
-                alerts.append(f'SELL SIGNAL: {ticker} - {reason} (rule-based, no AI review)')
-        except Exception as e:
-            print(f'  {ticker}: error - {e}')
-            continue
+    else:
+        print('\nMarket closed -- skipping thesis checks and sells')
+        alerts.append('Market closed - monitoring only, no trades executed')
 
     print('\nFetching portfolio from Alpaca...')
     portfolio = get_alpaca_portfolio()
