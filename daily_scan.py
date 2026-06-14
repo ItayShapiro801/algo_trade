@@ -143,13 +143,16 @@ def format_daily_message(portfolio: dict, alerts: list, state: dict) -> str:
 
 # ── Market hours ──────────────────────────────────────────────────────────── #
 def is_market_open() -> bool:
-    import alpaca_trade_api as tradeapi
-    api = tradeapi.REST(
-        os.getenv('ALPACA_API_KEY'),
-        os.getenv('ALPACA_SECRET_KEY'),
-        'https://paper-api.alpaca.markets',
-    )
-    return api.get_clock().is_open
+    try:
+        import alpaca_trade_api as tradeapi
+        api = tradeapi.REST(
+            os.getenv('ALPACA_API_KEY'),
+            os.getenv('ALPACA_SECRET_KEY'),
+            'https://paper-api.alpaca.markets/v2',
+        )
+        return api.get_clock().is_open
+    except Exception:
+        return True  # default to open if check fails
 
 
 # ── Main ──────────────────────────────────────────────────────────────────── #
@@ -258,4 +261,8 @@ def run_daily_scan():
 
 
 if __name__ == '__main__':
-    run_daily_scan()
+    try:
+        run_daily_scan()
+    except Exception as e:
+        print(f'Error: {e}')
+        send_telegram(f'Daily scan error: {e}')
