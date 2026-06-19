@@ -20,7 +20,7 @@
 | Max Drawdown | -33.2% | -18.5% | — |
 | Years Beating SPY | **11 / 17** | — | — |
 | Tax Saved vs Annual Rebalance | **$686,035** | — | — |
-| AI Cost (entire 17yr backtest) | **$0.033** | — | — |
+
 
 > Backtest runs from January 2010 through January 2026 using point-in-time SEC EDGAR data. No look-ahead bias. No survivorship bias.
 
