@@ -27,7 +27,7 @@ $100,000 → **$2,177,777** in 16 years (2010–2025). **+22.8% CAGR**, beating 
 | **CAGR** | **+22.8%** | ~+13.8% | ~+18.3% |
 | **Total Return** | **+2,078%** | +693% | +1,380% |
 | **Final Value** ($100K start) | **$2,177,777** | $792,981 | $1,479,923 |
-| AI cost (entire 16-year backtest) | **$0.033** | — | — |
+
 
 > Point-in-time SEC EDGAR data only. No look-ahead bias. No survivorship bias. No cherry-picked dates.
 
