@@ -39,6 +39,7 @@ _get_price_cache   = _vix._get_price_cache
 _price_on_date     = _vix._price_on_date
 _last_price_before = _vix._last_price_before
 _get_pit_metrics   = _vix._get_pit_metrics
+_get_split_ratio   = _vix._get_split_ratio
 check_thesis_break = _vix.check_thesis_break
 _cagr_series       = _vix._cagr   # takes a list, returns float (CAGR over series)
 
@@ -61,7 +62,7 @@ SP500_MAX_POS       = 25
 BACKTEST_START      = 2010
 MAX_POSITION_WEIGHT = 0.25
 
-AI_MODEL      = 'claude-haiku-4-5-20251001'  # Haiku 4.5 — current cheapest (haiku-3 is 404)
+AI_MODEL      = 'claude-haiku-4-5-20251001'  
 AI_COST_CAP   = 3.00
 AI_INPUT_CPM  = 0.80 / 1_000_000   # $0.80 per MTok (Haiku 4.5 pricing)
 AI_OUTPUT_CPM = 4.00 / 1_000_000   # $4.00 per MTok (Haiku 4.5 pricing)
@@ -333,11 +334,16 @@ def score_layer1_sp500(ticker: str, year: int, gaap: dict, price_hist: dict) -> 
     hist_price = _price_on_date(price_hist, f'{year}-01-01')
     if hist_price and hist_price > 0:
         if eps and eps[-1] > 0:
-            pe = hist_price / eps[-1]
+            # Adjust EPS for any split between the last fiscal year end and Jan 1 of the
+            # scoring year: yfinance retroactively adjusts prices but EDGAR EPS are not.
+            last_fy_end = f'{year - 2}-12-31'
+            split_ratio = _get_split_ratio(ticker, last_fy_end, f'{year}-01-01')
+            eps_adj = [e / split_ratio for e in eps] if split_ratio != 1.0 else eps
+            pe = hist_price / eps_adj[-1]
             if pe < 25: d4 += 4
             if pe < 15: d4 += 4
-            if len(eps) >= 3 and all(e > 0 for e in eps[-3:]):
-                eps_g = _cagr_series(eps[-3:]) * 100
+            if len(eps_adj) >= 3 and all(e > 0 for e in eps_adj[-3:]):
+                eps_g = _cagr_series(eps_adj[-3:]) * 100
                 if eps_g > 0:
                     peg = pe / eps_g
                     if peg < 1.5: d4 += 4
@@ -1008,7 +1014,7 @@ def run_sp500_backtest():
             ph = all_price_hists.get(ticker, {})
 
             broke, reason = check_thesis_break(
-                year, portfolio[ticker]['initial_metrics'], gaap, ph)
+                year, portfolio[ticker]['initial_metrics'], gaap, ph, ticker=ticker)
 
             if not broke:
                 portfolio[ticker]['ai_hold_count'] = 0   # clean year — reset counter
@@ -1159,7 +1165,7 @@ def run_sp500_backtest():
                     if shares <= 0 or cash < per_pos:
                         continue
 
-                    init_m = _get_pit_metrics(gaap, cutoff, ph)
+                    init_m = _get_pit_metrics(gaap, cutoff, ph, ticker=ticker)
 
                     portfolio[ticker] = {
                         'shares':          shares,

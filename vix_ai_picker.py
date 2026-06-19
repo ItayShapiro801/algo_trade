@@ -971,6 +971,26 @@ def _last_price_before(price_hist: dict, cutoff_date: str) -> Optional[float]:
     return price_hist[max(dates_before)]
 
 
+def _get_split_ratio(ticker: str, since_date: str, until_date: str) -> float:
+    """Cumulative split ratio for splits strictly after since_date and on/before until_date.
+
+    yfinance retroactively adjusts all historical prices for splits, but EDGAR EPS values
+    remain on the pre-split per-share basis as originally filed. When a split falls in this
+    window the price and EPS are on different per-share bases; dividing EPS by this ratio
+    before computing P/E or PEG restores consistency.
+    """
+    try:
+        splits = yf.Ticker(ticker).splits
+        ratio = 1.0
+        for split_date, split_ratio in splits.items():
+            sd = str(split_date)[:10]
+            if since_date < sd <= until_date:
+                ratio *= split_ratio
+        return ratio
+    except Exception:
+        return 1.0
+
+
 def score_layer1_pit(ticker: str, year: int, gaap: dict, price_hist: dict) -> tuple:
     """
     Point-in-time L1 score for ticker as of Jan 1 of year.
@@ -1507,7 +1527,8 @@ def print_pit_backtest_results(year_results: list, initial: float):
 # BUFFETT — BUY AND HOLD (THESIS-BREAK-ONLY SELLS)                             #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
-def _get_pit_metrics(gaap: dict, cutoff: str, price_hist: dict) -> dict:
+def _get_pit_metrics(gaap: dict, cutoff: str, price_hist: dict,
+                     ticker: Optional[str] = None) -> dict:
     """Raw PIT fundamentals at cutoff. Used to store initial metrics at buy time
     and to check thesis-break conditions in later years."""
     def _av(*fields, n=5):
@@ -1533,9 +1554,16 @@ def _get_pit_metrics(gaap: dict, cutoff: str, price_hist: dict) -> dict:
     hist_price = _price_on_date(price_hist, cutoff)
     pe = peg = None
     if hist_price and hist_price > 0 and eps and eps[-1] > 0:
-        pe = hist_price / eps[-1]
-        if len(eps) >= 3 and all(e > 0 for e in eps[-3:]):
-            eps_g = _cagr(eps[-3:]) * 100
+        # Adjust EPS for any stock split that fell between the last fiscal year end and
+        # the cutoff: yfinance prices are retroactively adjusted but EDGAR EPS are not.
+        split_ratio = 1.0
+        if ticker:
+            since_date  = f'{int(cutoff[:4]) - 1}-12-31'
+            split_ratio = _get_split_ratio(ticker, since_date, cutoff)
+        eps_adj = [e / split_ratio for e in eps] if split_ratio != 1.0 else eps
+        pe = hist_price / eps_adj[-1]
+        if len(eps_adj) >= 3 and all(e > 0 for e in eps_adj[-3:]):
+            eps_g = _cagr(eps_adj[-3:]) * 100
             if eps_g > 0:
                 peg = pe / eps_g
 
@@ -1553,14 +1581,14 @@ def _get_pit_metrics(gaap: dict, cutoff: str, price_hist: dict) -> dict:
 
 
 def check_thesis_break(year: int, initial_m: dict, gaap: dict,
-                        price_hist: dict) -> tuple:
+                        price_hist: dict, ticker: Optional[str] = None) -> tuple:
     """
     Returns (broke: bool, reason: str).
     Compares current-year PIT metrics against metrics stored at buy time.
     Five sell triggers — any one fires a sell.
     """
     cutoff = f'{year}-01-01'
-    curr   = _get_pit_metrics(gaap, cutoff, price_hist)
+    curr   = _get_pit_metrics(gaap, cutoff, price_hist, ticker=ticker)
 
     i_roe = initial_m.get('roe')
     c_roe = curr.get('roe')
@@ -1685,7 +1713,8 @@ def run_buffett_backtest():
                     continue
 
                 broke, reason = check_thesis_break(
-                    year, portfolio[ticker].get('initial_metrics', {}), gaap, ph)
+                    year, portfolio[ticker].get('initial_metrics', {}), gaap, ph,
+                    ticker=ticker)
                 if not broke:
                     continue
 
@@ -1751,7 +1780,7 @@ def run_buffett_backtest():
                 buy_price = _price_on_date(ph, cutoff)
                 if not buy_price:
                     continue
-                init_m = _get_pit_metrics(gaap, cutoff, ph)
+                init_m = _get_pit_metrics(gaap, cutoff, ph, ticker=t)
                 candidates.append({'ticker': t, 'score': sc, 'buy_price': buy_price,
                                    'initial_metrics': init_m, 'name': row.get('name', t)})
 

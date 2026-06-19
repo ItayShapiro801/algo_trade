@@ -104,7 +104,8 @@ def check_existing_positions(api, state: dict, year: int) -> tuple:
                 continue
             ph = _get_price_cache(ticker)
 
-            broke, reason = check_thesis_break(year, pos_state['initial_metrics'], gaap, ph)
+            broke, reason = check_thesis_break(year, pos_state['initial_metrics'], gaap, ph,
+                                               ticker=ticker)
             if not broke:
                 pos_state['ai_hold_count'] = 0
                 pnl = float(ap.unrealized_plpc) * 100
@@ -161,9 +162,14 @@ def check_existing_positions(api, state: dict, year: int) -> tuple:
 def execute_sells(api, tickers: list, state: dict):
     for ticker in tickers:
         try:
-            api.submit_order(symbol=ticker, qty=0, side='sell', type='market',
-                             time_in_force='day', close_position=True)
-            print(f'  ORDER PLACED: SELL all {ticker}')
+            position = api.get_position(ticker)
+            shares   = abs(int(float(position.qty)))
+            if shares < 1:
+                state['positions'].pop(ticker, None)
+                continue
+            api.submit_order(symbol=ticker, qty=shares, side='sell', type='market',
+                             time_in_force='day')
+            print(f'  ORDER PLACED: SELL {shares} sh {ticker}')
             state['positions'].pop(ticker, None)
         except Exception as e:
             print(f'  ORDER FAILED: SELL {ticker} - {e}')
@@ -204,17 +210,15 @@ def score_universe(year: int, existing_tickers: set) -> list:
 # ── Step 3: Buy new positions to fill open slots ─────────────────────────── #
 def execute_buys(api, candidates: list, n_held: int, state: dict, year: int):
     slots = MAX_POSITIONS - n_held
-    if slots <= 0:
-        print('  Portfolio full (25/25) - no new buys')
+
+    account = api.get_account()
+    cash    = float(account.cash)
+
+    if slots <= 0 or cash <= 0:
+        print('  No slots or cash available')
         return
 
-    account      = api.get_account()
-    buying_power = float(account.buying_power)
-    if buying_power <= 0:
-        print('  No buying power available - no new buys')
-        return
-
-    allocation = buying_power / slots
+    allocation = cash / slots
     cutoff     = (datetime.now() - timedelta(days=45)).strftime('%Y-%m-%d')
     bought     = 0
 
@@ -223,6 +227,11 @@ def execute_buys(api, candidates: list, n_held: int, state: dict, year: int):
             break
         ticker = cand['ticker']
         try:
+            current_cash = float(api.get_account().cash)
+            if current_cash < allocation * 0.9:
+                print('  Insufficient cash - stopping')
+                break
+
             quote = api.get_latest_trade(ticker)
             price = float(quote.price)
             if price <= 0:
@@ -236,7 +245,7 @@ def execute_buys(api, candidates: list, n_held: int, state: dict, year: int):
             cost = shares * price
             print(f'  BUY {ticker}: {shares} shares @ ${price:,.2f} = ${cost:,.0f}')
 
-            init_m = _get_pit_metrics(cand['gaap'], cutoff, cand['ph'])
+            init_m = _get_pit_metrics(cand['gaap'], cutoff, cand['ph'], ticker=ticker)
             state['positions'][ticker] = {
                 'buy_date':        str(date.today()),
                 'buy_year':        year,
